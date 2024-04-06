@@ -1,0 +1,79 @@
+image: node:12.14.1
+
+pipelines:
+  default:
+    - step: &build_php
+        image: composer:2.0.12
+        name: Validate & Build PHP
+        script:
+          - find "$(pwd)" -name "composer.lock" -not -path "*/vendor/*" -not -path "*/node_modules/*" -exec dirname {} \; | xargs -I DDD bash -c "composer -dDDD install && composer -dDDD test"
+        artifacts:
+          - "*/src/vendor/**"
+    - step: &build
+        name: Build Node
+        script:
+          - find "$(pwd)" -name "package-lock.json" -not -path "*/node_modules/*" -exec dirname {} \; | xargs -L1 -I DDD bash -c "npm --prefix DDD ci && npm run --prefix DDD prod"
+          - mkdir build
+          - find . -name '*.tar.gz' -path '*/build/*' -not -path '*/node_modules/*' -exec cp {} build \;
+          - find . -name 'gittag.txt' -path '*/build/*' -not -path '*/node_modules/*' -exec cp {} build \;
+        artifacts:
+          - build/**
+  branches:
+    '{main,master}':
+      - step: *build_php
+      - step: *build
+      - step:
+          name: Deploy commit to S3
+          oidc: true
+          image: amazon/aws-cli
+          script:
+            - export AWS_REGION=eu-west-1
+            - export AWS_ROLE_ARN=arn:aws:iam::538047100447:role/bitbucketoidcidp/apply/pugpig-wordpress-template20230827185618448900000004
+            - export AWS_WEB_IDENTITY_TOKEN_FILE=$(pwd)/web-identity-token
+            - echo $BITBUCKET_STEP_OIDC_TOKEN > $(pwd)/web-identity-token
+            - cd build
+            - aws s3 sync --delete . s3://pugpigreleases/server-artefacts/${BITBUCKET_REPO_SLUG}/$(cat gittag.txt)/
+            - aws s3 sync --delete . s3://pugpigreleases/server-artefacts/${BITBUCKET_REPO_SLUG}/latest_dev/
+      - step: &trigger_parent_deployments
+          name: Trigger Parent Deployments
+          image: atlassian/default-image:2
+          script:
+            - curl -sS https://dl.yarnpkg.com/debian/pubkey.gpg | apt-key add -
+            - apt-get update && apt-get install -y jq
+            - >
+                bash -c '
+                  if [ ! -z "${BUILD_REPO_SLUGS}" ]; then
+                    ACCESS_TOKEN=$(curl -X POST "https://bitbucket.org/site/oauth2/access_token" -u ${BITBUCKET_PIPELINES_KEY}:${BITBUCKET_PIPELINES_SECRET} -F "grant_type=client_credentials" | jq .access_token)
+
+                    for REPO_SLUG in ${BUILD_REPO_SLUGS}; do
+                      echo "Triggering build of ${REPO_SLUG}..."
+                      curl -H "Authorization:Bearer ${ACCESS_TOKEN}" -H "Content-Type:application/json" "https://api.bitbucket.org/2.0/repositories/kaldorgroup/${REPO_SLUG}/pipelines/" -d "
+                        {
+                          \"target\":{
+                            \"ref_type\":\"branch\",
+                            \"type\":\"pipeline_ref_target\",
+                            \"ref_name\":\"master\"
+                          }
+                        }"
+                    done
+                  fi
+                  '
+  tags:
+    '*':
+      - step: *build_php
+      - step: *build
+      - step:
+          name: Deploy tag to S3
+          oidc: true
+          deployment: staging
+          trigger: automatic
+          image: amazon/aws-cli
+          script:
+            - export AWS_REGION=eu-west-1
+            - export AWS_ROLE_ARN=arn:aws:iam::538047100447:role/bitbucketoidcidp/apply/pugpig-wordpress-template20230827185618448900000004
+            - export AWS_WEB_IDENTITY_TOKEN_FILE=$(pwd)/web-identity-token
+            - echo $BITBUCKET_STEP_OIDC_TOKEN > $(pwd)/web-identity-token
+            - cd build
+            - aws s3 sync --delete . s3://pugpigreleases/server-artefacts/${BITBUCKET_REPO_SLUG}/$(cat gittag.txt)/
+            - aws s3 sync --delete . s3://pugpigreleases/server-artefacts/${BITBUCKET_REPO_SLUG}/latest_tag/
+      - step: *trigger_parent_deployments

@@ -1,0 +1,20 @@
+version: '3'
+
+services:
+    build-dev-core:
+      labels:
+        - "traefik.enable=false"
+      image: pugpig/wpdev:v0
+      restart: "no"
+      volumes:
+        - ./dev-core:/dev-core
+      user: app
+      command: bash -c '''
+          cd /dev-core
+          && composer update --no-interaction
+          && composer install --no-interaction
+          && composer dumpautoload --optimize
+          && composer test --no-interaction
+          && npm ci
+          && NO_GIT=1 npm run watch
+        '''

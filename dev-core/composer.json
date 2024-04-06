@@ -1,0 +1,10 @@
+{
+    "require-dev": {
+        "szepeviktor/phpstan-wordpress": "^1.1.2"
+    },
+    "scripts": {
+        "test": [
+            "vendor/bin/phpstan --configuration=config/phpstan/phpstan.neon.dist --no-interaction analyse --debug --memory-limit 2G"
+        ]
+    }
+}
